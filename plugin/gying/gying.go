@@ -624,7 +624,7 @@ func (p *GyingPlugin) setBaseURL(baseURL string) {
 }
 
 func (p *GyingPlugin) getLoginPageURL() string {
-	return p.getBaseURL() + "/user/login/"
+	return p.getBaseURL()
 }
 
 func (p *GyingPlugin) getLoginAPIURL() string {
@@ -1421,7 +1421,14 @@ func isBotChallengePage(body []byte) bool {
 		return false
 	}
 	bodyText := string(body)
-	return strings.Contains(bodyText, "正在确认你是不是机器人") && challengeJSONPattern.Match(body)
+	if !challengeJSONPattern.Match(body) {
+		return false
+	}
+
+	return strings.Contains(bodyText, "正在确认你是不是机器人") ||
+		strings.Contains(bodyText, "浏览器安全验证") ||
+		strings.Contains(bodyText, "安全验证") ||
+		strings.Contains(bodyText, "正在进行浏览器计算验证")
 }
 
 func isLoginShell(body []byte) bool {
@@ -1429,7 +1436,11 @@ func isLoginShell(body []byte) bool {
 		return false
 	}
 	bodyText := string(body)
-	return strings.Contains(bodyText, "_BT.PC.HTML('login')") || strings.Contains(bodyText, `_BT.PC.HTML("login")`)
+	return strings.Contains(bodyText, "_BT.PC.HTML('login')") ||
+		strings.Contains(bodyText, `_BT.PC.HTML("login")`) ||
+		strings.Contains(bodyText, "_BT.PC.HTML('nologin')") ||
+		strings.Contains(bodyText, `_BT.PC.HTML("nologin")`) ||
+		strings.Contains(bodyText, "未登录，访问受限")
 }
 
 func (p *GyingPlugin) exportCookies(scraper *cloudscraper.Scraper, rawURL string) (string, error) {
@@ -1761,6 +1772,7 @@ func (p *GyingPlugin) doLogin(username, password string) (*cloudscraper.Scraper,
 	}
 
 	_, statusCode, headers, err := p.requestWithChallengeRetry(scraper, http.MethodGet, loginPageURL, "", "")
+
 	if err != nil {
 		if DebugLog {
 			fmt.Printf("[Gying] 访问登录页面失败: %v\n", err)
@@ -2072,7 +2084,8 @@ func (p *GyingPlugin) searchWithScraper(keyword string, scraper *cloudscraper.Sc
 	}
 
 	// 1. 使用cloudscraper请求搜索页面
-	searchURL := fmt.Sprintf("%s/s/1---1/%s", p.getBaseURL(), url.QueryEscape(keyword))
+	// searchURL := fmt.Sprintf("%s/s/1---1/%s", p.getBaseURL(), url.QueryEscape(keyword))
+	searchURL := fmt.Sprintf("%s/search?q=%s&type=&mode=1", p.getBaseURL(), url.QueryEscape(keyword))
 
 	if DebugLog {
 		fmt.Printf("[Gying] 搜索URL: %s\n", searchURL)
