@@ -16,10 +16,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -1528,23 +1530,76 @@ func (p *GyingPlugin) solveBotChallenge(scraper *cloudscraper.Scraper, requestUR
 		return fmt.Errorf("验证数据无效")
 	}
 
-	remaining := make(map[string]int, len(challenge.Challenge))
+	remaining := make(map[string][]int, len(challenge.Challenge))
 	nonces := make([]int, len(challenge.Challenge))
 	for idx, target := range challenge.Challenge {
-		remaining[strings.ToLower(target)] = idx
+		hash := strings.ToLower(target)
+		remaining[hash] = append(remaining[hash], idx)
 	}
 
-	for nonce := 0; nonce <= challenge.Diff && len(remaining) > 0; nonce++ {
-		sum := sha256.Sum256([]byte(strconv.Itoa(nonce) + challenge.Salt))
-		hash := hex.EncodeToString(sum[:])
-		if idx, ok := remaining[hash]; ok {
-			nonces[idx] = nonce
-			delete(remaining, hash)
+	workerCount := runtime.GOMAXPROCS(0)
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if maxWorkers := challenge.Diff + 1; workerCount > maxWorkers {
+		workerCount = maxWorkers
+	}
+
+	var (
+		mu         sync.Mutex
+		solved     atomic.Int32
+		targetsLen = int32(len(challenge.Challenge))
+		wg         sync.WaitGroup
+		saltBytes  = []byte(challenge.Salt)
+	)
+
+	for workerID := 0; workerID < workerCount; workerID++ {
+		wg.Add(1)
+		go func(start int) {
+			defer wg.Done()
+
+			hashInput := make([]byte, 0, len(saltBytes)+20)
+			for nonce := start; nonce <= challenge.Diff; nonce += workerCount {
+				if solved.Load() >= targetsLen {
+					return
+				}
+
+				hashInput = strconv.AppendInt(hashInput[:0], int64(nonce), 10)
+				hashInput = append(hashInput, saltBytes...)
+
+				sum := sha256.Sum256(hashInput)
+				hash := hex.EncodeToString(sum[:])
+
+				mu.Lock()
+				indexes := remaining[hash]
+				if len(indexes) > 0 {
+					idx := indexes[0]
+					nonces[idx] = nonce
+					solved.Add(1)
+					if len(indexes) == 1 {
+						delete(remaining, hash)
+					} else {
+						remaining[hash] = indexes[1:]
+					}
+					if solved.Load() >= targetsLen {
+						mu.Unlock()
+						return
+					}
+				}
+				mu.Unlock()
+			}
+		}(workerID)
+	}
+
+	wg.Wait()
+
+	if solved.Load() != targetsLen {
+		mu.Lock()
+		missing := len(remaining)
+		mu.Unlock()
+		if missing > 0 {
+			return fmt.Errorf("无法完成机器人验证")
 		}
-	}
-
-	if len(remaining) > 0 {
-		return fmt.Errorf("无法完成机器人验证")
 	}
 
 	form := url.Values{}
